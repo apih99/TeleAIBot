@@ -10,6 +10,7 @@ import requests
 from io import BytesIO
 from PIL import Image
 from collections import defaultdict
+import base64
 
 # Load environment variables
 load_dotenv()
@@ -27,9 +28,10 @@ genai.configure(api_key=os.getenv('GEMINI_API_KEY'))
 text_model = genai.GenerativeModel('gemini-2.0-flash-exp')
 vision_model = genai.GenerativeModel('gemini-2.0-flash-exp')
 
-# Store chat histories (user_id -> list of messages)
+# Store chat histories and image contexts
 chat_histories = defaultdict(list)
-MAX_HISTORY = 10  # Maximum number of messages to keep in history
+image_contexts = defaultdict(dict)  # Store the last image and its description
+MAX_HISTORY = 15
 
 # Simple HTTP handler for health checks
 class HealthCheckHandler(BaseHTTPRequestHandler):
@@ -53,12 +55,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Send a message when the command /start is issued."""
     user_id = update.effective_user.id
     chat_histories[user_id] = []  # Clear history for this user
+    image_contexts[user_id] = {}  # Clear image context
     
     welcome_message = """👋 Hello! I'm your AI assistant powered by Gemini. I can:
     
 1. Answer your text messages (with memory of our conversation)
 2. Analyze images you send (just send an image with or without a question)
-3. Use /clear to clear our conversation history
+3. Remember context from both text and images
+4. Use /clear to clear our conversation history
 
 Feel free to try either!"""
     await update.message.reply_text(welcome_message)
@@ -74,6 +78,7 @@ Here are the available commands:
 You can:
 1. Send any text message for a response (I'll remember our conversation)
 2. Send an image (with optional text) for image analysis
+3. Ask follow-up questions about the last image you sent
 """
     await update.message.reply_text(help_text)
 
@@ -81,6 +86,7 @@ async def clear_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Clear conversation history for the user."""
     user_id = update.effective_user.id
     chat_histories[user_id] = []
+    image_contexts[user_id] = {}
     await update.message.reply_text("Conversation history cleared! Let's start fresh.")
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -89,14 +95,25 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_id = update.effective_user.id
         user_message = update.message.text
         
-        # Add user message to history
+        # Check if there's a recent image context and the message seems like a follow-up
+        if image_contexts.get(user_id) and not any(word in user_message.lower() for word in ["hello", "hi", "start"]):
+            # Use vision model for follow-up about the image
+            img = image_contexts[user_id].get('image')
+            if img:
+                response = vision_model.generate_content([
+                    f"Previous context: {image_contexts[user_id].get('description', '')}\nNew question: {user_message}",
+                    img
+                ])
+                await update.message.reply_text(response.text)
+                # Store the interaction in chat history
+                chat_histories[user_id].append({"role": "user", "parts": [user_message]})
+                chat_histories[user_id].append({"role": "model", "parts": [response.text]})
+                return
+
+        # If no image context or not a follow-up, proceed with text chat
         chat_histories[user_id].append({"role": "user", "parts": [user_message]})
-        
-        # Create chat with history
         chat = text_model.start_chat(history=chat_histories[user_id])
         response = chat.send_message(user_message)
-        
-        # Add bot response to history
         chat_histories[user_id].append({"role": "model", "parts": [response.text]})
         
         # Trim history if too long
@@ -109,10 +126,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(error_message)
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle incoming photos."""
+    """Handle incoming photos with context."""
     try:
-        # Get the photo file
-        photo = update.message.photo[-1]  # Get the largest photo size
+        user_id = update.effective_user.id
+        photo = update.message.photo[-1]
         file = await context.bot.get_file(photo.file_id)
         
         # Download the photo
@@ -122,8 +139,19 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Get caption if any
         caption = update.message.caption if update.message.caption else "What's in this image?"
         
+        # Store image context for future reference
+        image_contexts[user_id] = {
+            'image': img,
+            'description': caption
+        }
+        
         # Generate response using vision model
         response = vision_model.generate_content([caption, img])
+        
+        # Store the interaction in chat history
+        chat_histories[user_id].append({"role": "user", "parts": [f"[Sent an image with caption: {caption}]"]})
+        chat_histories[user_id].append({"role": "model", "parts": [response.text]})
+        
         await update.message.reply_text(response.text)
     except Exception as e:
         error_message = f"Sorry, an error occurred while processing the image: {str(e)}"
