@@ -6,6 +6,9 @@ from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
+import requests
+from io import BytesIO
+from PIL import Image
 
 # Load environment variables
 load_dotenv()
@@ -18,6 +21,10 @@ logging.basicConfig(
 
 # Initialize Gemini AI
 genai.configure(api_key=os.getenv('GEMINI_API_KEY'))
+
+# Initialize models
+text_model = genai.GenerativeModel('gemini-2.0-flash-exp')
+vision_model = genai.GenerativeModel('gemini-pro-vision')
 
 # Simple HTTP handler for health checks
 class HealthCheckHandler(BaseHTTPRequestHandler):
@@ -39,34 +46,56 @@ def run_health_server():
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Send a message when the command /start is issued."""
-    welcome_message = "👋 Hello! I'm your AI assistant powered by Gemini. Feel free to ask me anything!"
+    welcome_message = """👋 Hello! I'm your AI assistant powered by Gemini. I can:
+    
+1. Answer your text messages
+2. Analyze images you send (just send an image with or without a question)
+
+Feel free to try either!"""
     await update.message.reply_text(welcome_message)
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Send a message when the command /help is issued."""
     help_text = """
-    Here are the available commands:
-    /start - Start the bot
-    /help - Show this help message
-    
-    Simply send any message, and I'll respond using Gemini AI!
-    """
+Here are the available commands:
+/start - Start the bot
+/help - Show this help message
+
+You can:
+1. Send any text message for a response
+2. Send an image (with optional text) for image analysis
+"""
     await update.message.reply_text(help_text)
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle incoming messages and generate responses using Gemini AI."""
+    """Handle incoming text messages."""
     try:
-        # Get user's message
         user_message = update.message.text
-        
-        # Generate response using Gemini AI
-        model = genai.GenerativeModel('gemini-2.0-flash-exp')
-        response = model.generate_content(user_message)
-        
-        # Send response back to user
+        response = text_model.generate_content(user_message)
         await update.message.reply_text(response.text)
     except Exception as e:
         error_message = f"Sorry, an error occurred: {str(e)}"
+        await update.message.reply_text(error_message)
+
+async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle incoming photos."""
+    try:
+        # Get the photo file
+        photo = update.message.photo[-1]  # Get the largest photo size
+        file = await context.bot.get_file(photo.file_id)
+        
+        # Download the photo
+        response = requests.get(file.file_path)
+        img = Image.open(BytesIO(response.content))
+        
+        # Get caption if any
+        caption = update.message.caption if update.message.caption else "What's in this image?"
+        
+        # Generate response using vision model
+        response = vision_model.generate_content([caption, img])
+        await update.message.reply_text(response.text)
+    except Exception as e:
+        error_message = f"Sorry, an error occurred while processing the image: {str(e)}"
         await update.message.reply_text(error_message)
 
 def main():
@@ -82,7 +111,8 @@ def main():
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("help", help_command))
     
-    # Add message handler
+    # Add message handlers
+    application.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
     # Start the Bot
