@@ -1,7 +1,5 @@
 import os
 import logging
-import signal
-import asyncio
 from dotenv import load_dotenv
 import google.generativeai as genai
 from telegram import Update
@@ -23,8 +21,6 @@ logging.basicConfig(
     level=logging.INFO
 )
 
-logger = logging.getLogger(__name__)
-
 # Initialize Gemini AI
 genai.configure(api_key=os.getenv('GEMINI_API_KEY'))
 
@@ -37,11 +33,6 @@ chat_histories = defaultdict(list)
 image_contexts = defaultdict(dict)  # Store the last image and its description
 MAX_HISTORY = 15
 
-# Global variables for cleanup
-http_server = None
-application = None
-should_exit = False
-
 # Simple HTTP handler for health checks
 class HealthCheckHandler(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -53,20 +44,12 @@ class HealthCheckHandler(BaseHTTPRequestHandler):
         else:
             self.send_response(404)
             self.end_headers()
-    
-    def log_message(self, format, *args):
-        # Suppress logging of health check requests
-        pass
 
 def run_health_server():
-    global http_server
     port = int(os.getenv('PORT', 8080))
-    http_server = HTTPServer(('0.0.0.0', port), HealthCheckHandler)
-    logger.info(f'Starting health check server on port {port}')
-    try:
-        http_server.serve_forever()
-    except Exception as e:
-        logger.error(f"Health server error: {str(e)}")
+    server = HTTPServer(('0.0.0.0', port), HealthCheckHandler)
+    logging.info(f'Starting health check server on port {port}')
+    server.serve_forever()
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Send a message when the command /start is issued."""
@@ -174,39 +157,12 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         error_message = f"Sorry, an error occurred while processing the image: {str(e)}"
         await update.message.reply_text(error_message)
 
-async def shutdown():
-    """Cleanup function to be called before shutdown."""
-    logger.info("Initiating shutdown...")
-    
-    # Stop the HTTP server
-    global http_server
-    if http_server:
-        logger.info("Shutting down HTTP server...")
-        http_server.shutdown()
-        http_server.server_close()
-    
-    # Stop the telegram bot
-    global application
-    if application:
-        logger.info("Stopping telegram bot...")
-        await application.stop()
-    
-    # Clear memory
-    chat_histories.clear()
-    image_contexts.clear()
-    
-    logger.info("Shutdown complete")
+def main():
+    """Start the bot."""
+    # Start health check server in a separate thread
+    health_thread = threading.Thread(target=run_health_server, daemon=True)
+    health_thread.start()
 
-def signal_handler():
-    """Handle shutdown signals."""
-    global should_exit
-    should_exit = True
-    logger.info("Shutdown signal received")
-
-async def run_bot():
-    """Run the telegram bot."""
-    global application, should_exit
-    
     # Create the Application and pass it your bot's token
     application = Application.builder().token(os.getenv('TELEGRAM_BOT_TOKEN')).build()
 
@@ -220,44 +176,7 @@ async def run_bot():
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
     # Start the Bot
-    logger.info("Starting bot...")
-    await application.initialize()
-    await application.start()
-    
-    try:
-        logger.info("Bot is running...")
-        while not should_exit:
-            await application.update_queue.get()
-            
-    except Exception as e:
-        logger.error(f"Error in bot: {str(e)}")
-    finally:
-        await shutdown()
-
-async def main_async():
-    """Async main function."""
-    # Start health check server in a separate thread
-    health_thread = threading.Thread(target=run_health_server, daemon=True)
-    health_thread.start()
-
-    # Run the bot
-    await run_bot()
-
-def main():
-    """Start the bot and health server."""
-    # Set up signal handlers
-    signal.signal(signal.SIGINT, lambda s, f: signal_handler())
-    signal.signal(signal.SIGTERM, lambda s, f: signal_handler())
-    
-    try:
-        # Run the async main function
-        asyncio.run(main_async())
-    except KeyboardInterrupt:
-        logger.info("Received keyboard interrupt")
-    except Exception as e:
-        logger.error(f"Error in main: {str(e)}")
-    finally:
-        logger.info("Bot stopped")
+    application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == '__main__':
     main() 
