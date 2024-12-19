@@ -1,5 +1,7 @@
 import os
 import logging
+import signal
+import asyncio
 from dotenv import load_dotenv
 import google.generativeai as genai
 from telegram import Update
@@ -11,6 +13,7 @@ from io import BytesIO
 from PIL import Image
 from collections import defaultdict
 import base64
+import sys
 
 # Load environment variables
 load_dotenv()
@@ -20,6 +23,7 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
 )
+logger = logging.getLogger(__name__)
 
 # Initialize Gemini AI
 genai.configure(api_key=os.getenv('GEMINI_API_KEY'))
@@ -32,6 +36,10 @@ vision_model = genai.GenerativeModel('gemini-2.0-flash-exp')
 chat_histories = defaultdict(list)
 image_contexts = defaultdict(dict)  # Store the last image and its description
 MAX_HISTORY = 15
+
+# Global flag for graceful shutdown
+is_shutting_down = False
+health_server = None
 
 async def send_long_message(update: Update, text: str):
     """Split and send long messages."""
@@ -70,7 +78,19 @@ async def send_long_message(update: Update, text: str):
     if current_message:
         await update.message.reply_text(current_message)
 
-# Simple HTTP handler for health checks
+def signal_handler(signum, frame):
+    """Handle shutdown signals gracefully."""
+    global is_shutting_down
+    logger.info(f"Received signal {signum}. Starting graceful shutdown...")
+    is_shutting_down = True
+    
+    if health_server:
+        logger.info("Shutting down health check server...")
+        health_server.shutdown()
+    
+    # Let the main loop handle the actual shutdown
+    raise SystemExit(0)
+
 class HealthCheckHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == '/health':
@@ -81,12 +101,23 @@ class HealthCheckHandler(BaseHTTPRequestHandler):
         else:
             self.send_response(404)
             self.end_headers()
+    
+    def log_message(self, format, *args):
+        """Suppress default logging of requests."""
+        pass
 
 def run_health_server():
-    port = int(os.getenv('PORT', 8080))
-    server = HTTPServer(('0.0.0.0', port), HealthCheckHandler)
-    logging.info(f'Starting health check server on port {port}')
-    server.serve_forever()
+    global health_server
+    try:
+        port = int(os.getenv('PORT', 8080))
+        health_server = HTTPServer(('0.0.0.0', port), HealthCheckHandler)
+        logger.info(f'Starting health check server on port {port}')
+        health_server.serve_forever()
+    except Exception as e:
+        logger.error(f"Health server error: {e}")
+        if not is_shutting_down:  # Only restart if not shutting down
+            logger.info("Attempting to restart health server...")
+            run_health_server()
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Send a message when the command /start is issued."""
@@ -196,26 +227,72 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         error_message = f"Sorry, an error occurred while processing the image: {str(e)}"
         await send_long_message(update, error_message)
 
-def main():
-    """Start the bot."""
-    # Start health check server in a separate thread
-    health_thread = threading.Thread(target=run_health_server, daemon=True)
-    health_thread.start()
-
-    # Create the Application and pass it your bot's token
-    application = Application.builder().token(os.getenv('TELEGRAM_BOT_TOKEN')).build()
-
-    # Add command handlers
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("help", help_command))
-    application.add_handler(CommandHandler("clear", clear_history))
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle errors in the telegram-python-bot framework."""
+    logger.error(f"Exception while handling an update: {context.error}")
     
-    # Add message handlers
-    application.add_handler(MessageHandler(filters.PHOTO, handle_photo))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    if update and hasattr(update, 'effective_message'):
+        error_message = "An error occurred while processing your request. I'll try to recover..."
+        try:
+            await update.effective_message.reply_text(error_message)
+        except Exception as e:
+            logger.error(f"Failed to send error message: {e}")
 
-    # Start the Bot
-    application.run_polling(allowed_updates=Update.ALL_TYPES)
+async def main() -> None:
+    """Start the bot with error handling and recovery."""
+    try:
+        # Set up signal handlers
+        signal.signal(signal.SIGINT, signal_handler)
+        signal.signal(signal.SIGTERM, signal_handler)
+        
+        # Start health check server in a separate thread
+        health_thread = threading.Thread(target=run_health_server, daemon=True)
+        health_thread.start()
+
+        # Initialize bot with recovery options
+        application = (
+            Application.builder()
+            .token(os.getenv('TELEGRAM_BOT_TOKEN'))
+            .read_timeout(30)
+            .write_timeout(30)
+            .connect_timeout(30)
+            .pool_timeout(30)
+            .build()
+        )
+
+        # Add handlers
+        application.add_handler(CommandHandler("start", start))
+        application.add_handler(CommandHandler("help", help_command))
+        application.add_handler(CommandHandler("clear", clear_history))
+        application.add_handler(MessageHandler(filters.PHOTO, handle_photo))
+        application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+        
+        # Add error handler
+        application.add_error_handler(error_handler)
+
+        # Start the bot with graceful shutdown
+        await application.initialize()
+        await application.start()
+        await application.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
+
+    except Exception as e:
+        logger.error(f"Critical error in main: {e}")
+        if not is_shutting_down:
+            logger.info("Attempting to restart the bot...")
+            await asyncio.sleep(5)  # Wait before retrying
+            await main()  # Recursive restart
+    finally:
+        if is_shutting_down:
+            logger.info("Shutting down application...")
+            if application:
+                await application.stop()
+                await application.shutdown()
 
 if __name__ == '__main__':
-    main() 
+    try:
+        asyncio.run(main())
+    except (KeyboardInterrupt, SystemExit):
+        logger.info("Bot stopped by user/system request")
+    except Exception as e:
+        logger.error(f"Fatal error: {e}")
+        sys.exit(1) 
