@@ -9,6 +9,7 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 import requests
 from io import BytesIO
 from PIL import Image
+from collections import defaultdict
 
 # Load environment variables
 load_dotenv()
@@ -25,6 +26,10 @@ genai.configure(api_key=os.getenv('GEMINI_API_KEY'))
 # Initialize models
 text_model = genai.GenerativeModel('gemini-2.0-flash-exp')
 vision_model = genai.GenerativeModel('gemini-2.0-flash-exp')
+
+# Store chat histories (user_id -> list of messages)
+chat_histories = defaultdict(list)
+MAX_HISTORY = 10  # Maximum number of messages to keep in history
 
 # Simple HTTP handler for health checks
 class HealthCheckHandler(BaseHTTPRequestHandler):
@@ -46,10 +51,14 @@ def run_health_server():
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Send a message when the command /start is issued."""
+    user_id = update.effective_user.id
+    chat_histories[user_id] = []  # Clear history for this user
+    
     welcome_message = """👋 Hello! I'm your AI assistant powered by Gemini. I can:
     
-1. Answer your text messages
+1. Answer your text messages (with memory of our conversation)
 2. Analyze images you send (just send an image with or without a question)
+3. Use /clear to clear our conversation history
 
 Feel free to try either!"""
     await update.message.reply_text(welcome_message)
@@ -60,18 +69,40 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 Here are the available commands:
 /start - Start the bot
 /help - Show this help message
+/clear - Clear conversation history
 
 You can:
-1. Send any text message for a response
+1. Send any text message for a response (I'll remember our conversation)
 2. Send an image (with optional text) for image analysis
 """
     await update.message.reply_text(help_text)
 
+async def clear_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Clear conversation history for the user."""
+    user_id = update.effective_user.id
+    chat_histories[user_id] = []
+    await update.message.reply_text("Conversation history cleared! Let's start fresh.")
+
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle incoming text messages."""
+    """Handle incoming text messages with context."""
     try:
+        user_id = update.effective_user.id
         user_message = update.message.text
-        response = text_model.generate_content(user_message)
+        
+        # Add user message to history
+        chat_histories[user_id].append({"role": "user", "parts": [user_message]})
+        
+        # Create chat with history
+        chat = text_model.start_chat(history=chat_histories[user_id])
+        response = chat.send_message(user_message)
+        
+        # Add bot response to history
+        chat_histories[user_id].append({"role": "model", "parts": [response.text]})
+        
+        # Trim history if too long
+        if len(chat_histories[user_id]) > MAX_HISTORY:
+            chat_histories[user_id] = chat_histories[user_id][-MAX_HISTORY:]
+        
         await update.message.reply_text(response.text)
     except Exception as e:
         error_message = f"Sorry, an error occurred: {str(e)}"
@@ -110,6 +141,7 @@ def main():
     # Add command handlers
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("help", help_command))
+    application.add_handler(CommandHandler("clear", clear_history))
     
     # Add message handlers
     application.add_handler(MessageHandler(filters.PHOTO, handle_photo))
