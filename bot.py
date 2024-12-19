@@ -29,8 +29,8 @@ logger = logging.getLogger(__name__)
 genai.configure(api_key=os.getenv('GEMINI_API_KEY'))
 
 # Initialize models
-text_model = genai.GenerativeModel('gemini-pro')
-vision_model = genai.GenerativeModel('gemini-pro-vision')
+text_model = genai.GenerativeModel('gemini-2.0-flash-exp')
+vision_model = genai.GenerativeModel('gemini-2.0-flash-exp')
 
 # Store chat histories and image contexts
 chat_histories = defaultdict(list)
