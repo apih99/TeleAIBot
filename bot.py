@@ -24,7 +24,7 @@ genai.configure(api_key=os.getenv('GEMINI_API_KEY'))
 
 # Initialize models
 text_model = genai.GenerativeModel('gemini-2.0-flash-exp')
-vision_model = genai.GenerativeModel('gemini-pro-vision')
+vision_model = genai.GenerativeModel('gemini-2.0-flash-exp')
 
 # Simple HTTP handler for health checks
 class HealthCheckHandler(BaseHTTPRequestHandler):
