@@ -62,7 +62,10 @@ def run_health_server():
     port = int(os.getenv('PORT', 8080))
     http_server = HTTPServer(('0.0.0.0', port), HealthCheckHandler)
     logger.info(f'Starting health check server on port {port}')
-    http_server.serve_forever()
+    try:
+        http_server.serve_forever()
+    except Exception as e:
+        logger.error(f"Health server error: {str(e)}")
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Send a message when the command /start is issued."""
@@ -196,12 +199,35 @@ async def shutdown(signal_num):
 
 def signal_handler(sig, frame):
     """Handle shutdown signals."""
-    asyncio.run(shutdown(sig))
+    logger.info(f"Received signal {sig}")
+    # Don't shut down automatically - only handle actual termination signals
+    if sig in (signal.SIGINT, signal.SIGTERM):
+        asyncio.run(shutdown(sig))
 
-def main():
-    """Start the bot."""
+async def run_bot():
+    """Run the telegram bot."""
     global application
     
+    # Create the Application and pass it your bot's token
+    application = Application.builder().token(os.getenv('TELEGRAM_BOT_TOKEN')).build()
+
+    # Add command handlers
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("help", help_command))
+    application.add_handler(CommandHandler("clear", clear_history))
+    
+    # Add message handlers
+    application.add_handler(MessageHandler(filters.PHOTO, handle_photo))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+
+    # Start the Bot
+    logger.info("Starting bot...")
+    await application.initialize()
+    await application.start()
+    await application.run_polling(allowed_updates=Update.ALL_TYPES)
+
+def main():
+    """Start the bot and health server."""
     # Set up signal handlers
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
@@ -211,25 +237,13 @@ def main():
         health_thread = threading.Thread(target=run_health_server, daemon=True)
         health_thread.start()
 
-        # Create the Application and pass it your bot's token
-        application = Application.builder().token(os.getenv('TELEGRAM_BOT_TOKEN')).build()
-
-        # Add command handlers
-        application.add_handler(CommandHandler("start", start))
-        application.add_handler(CommandHandler("help", help_command))
-        application.add_handler(CommandHandler("clear", clear_history))
-        
-        # Add message handlers
-        application.add_handler(MessageHandler(filters.PHOTO, handle_photo))
-        application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-
-        # Start the Bot
-        logger.info("Starting bot...")
-        application.run_polling(allowed_updates=Update.ALL_TYPES)
+        # Run the bot in the main thread
+        asyncio.run(run_bot())
         
     except Exception as e:
         logger.error(f"Error in main: {str(e)}")
-        asyncio.run(shutdown(0))
+    finally:
+        logger.info("Bot stopped")
 
 if __name__ == '__main__':
     main() 
