@@ -31,17 +31,18 @@ logger = logging.getLogger(__name__)
 genai.configure(api_key=os.getenv('GEMINI_API_KEY'))
 
 # Initialize models
-text_model = genai.GenerativeModel('gemini-2.0-flash-exp')
-vision_model = genai.GenerativeModel('gemini-2.0-flash-exp')
+text_model = genai.GenerativeModel('gemini-pro')
+vision_model = genai.GenerativeModel('gemini-pro-vision')
 
 # Store chat histories and image contexts
 chat_histories = defaultdict(list)
-image_contexts = defaultdict(dict)  # Store the last image and its description
+image_contexts = defaultdict(dict)
 MAX_HISTORY = 15
 
-# Global flag for graceful shutdown
+# Global flags and variables
 is_shutting_down = False
 health_server = None
+application = None
 
 async def send_long_message(update: Update, text: str):
     """Split and send long messages."""
@@ -127,36 +128,41 @@ def cleanup_socket(port: int):
 def run_health_server():
     """Run the health check server with proper error handling."""
     global health_server
-    try:
-        port = int(os.getenv('PORT', 8080))
-        
-        # If port is in use, try to clean it up
-        if is_port_in_use(port):
-            logger.info(f"Port {port} is in use, attempting cleanup...")
-            cleanup_socket(port)
+    max_retries = 3
+    retry_count = 0
+    
+    while retry_count < max_retries and not is_shutting_down:
+        try:
+            port = int(os.getenv('PORT', 8080))
             
-            # Wait for port to be released
-            if not wait_for_port_release(port):
-                logger.error(f"Could not secure port {port}, health check server disabled")
+            # If port is in use, wait and retry
+            if is_port_in_use(port):
+                logger.info(f"Port {port} is in use, waiting...")
+                time.sleep(5)
+                retry_count += 1
+                continue
+            
+            # Create server with reuse address option
+            health_server = HTTPServer(('', port), HealthCheckHandler)
+            health_server.allow_reuse_address = True
+            logger.info(f'Starting health check server on port {port}')
+            health_server.serve_forever()
+            
+        except Exception as e:
+            logger.error(f"Health server error: {e}")
+            retry_count += 1
+            if retry_count >= max_retries:
+                logger.error(f"Failed to start health server after {max_retries} attempts")
                 return
-        
-        # Create server with reuse address option
-        health_server = HTTPServer(('0.0.0.0', port), HealthCheckHandler)
-        health_server.allow_reuse_address = True
-        logger.info(f'Starting health check server on port {port}')
-        health_server.serve_forever()
-    except Exception as e:
-        logger.error(f"Health server error: {e}")
-        if not is_shutting_down:
-            time.sleep(5)  # Wait before retry
-            run_health_server()
+            time.sleep(5)
 
-def signal_handler(signum, frame):
-    """Handle shutdown signals gracefully."""
-    global is_shutting_down, health_server
-    logger.info(f"Received signal {signum}. Starting graceful shutdown...")
+async def shutdown():
+    """Gracefully shutdown all components."""
+    global is_shutting_down, health_server, application
+    
     is_shutting_down = True
     
+    # Shutdown health server
     if health_server:
         try:
             logger.info("Shutting down health check server...")
@@ -165,8 +171,26 @@ def signal_handler(signum, frame):
         except Exception as e:
             logger.error(f"Error shutting down health server: {e}")
     
-    # Let the main loop handle the actual shutdown
-    raise SystemExit(0)
+    # Shutdown application
+    if application:
+        try:
+            logger.info("Shutting down telegram application...")
+            await application.stop()
+            await application.shutdown()
+        except Exception as e:
+            logger.error(f"Error shutting down application: {e}")
+
+def signal_handler(signum, frame):
+    """Handle shutdown signals gracefully."""
+    logger.info(f"Received signal {signum}. Starting graceful shutdown...")
+    
+    # Create a new event loop for the shutdown process
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    loop.run_until_complete(shutdown())
+    loop.close()
+    
+    sys.exit(0)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Send a message when the command /start is issued."""
@@ -289,6 +313,8 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
 
 async def main() -> None:
     """Start the bot with error handling and recovery."""
+    global application
+    
     try:
         # Set up signal handlers
         signal.signal(signal.SIGINT, signal_handler)
@@ -315,33 +341,43 @@ async def main() -> None:
         application.add_handler(CommandHandler("clear", clear_history))
         application.add_handler(MessageHandler(filters.PHOTO, handle_photo))
         application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-        
-        # Add error handler
         application.add_error_handler(error_handler)
 
-        # Start the bot with graceful shutdown
+        # Start the bot
         await application.initialize()
         await application.start()
         await application.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
 
     except Exception as e:
         logger.error(f"Critical error in main: {e}")
-        if not is_shutting_down:
-            logger.info("Attempting to restart the bot...")
-            await asyncio.sleep(5)  # Wait before retrying
-            await main()  # Recursive restart
-    finally:
-        if is_shutting_down:
-            logger.info("Shutting down application...")
-            if application:
-                await application.stop()
-                await application.shutdown()
+        await shutdown()
+        return 1
+    
+    return 0
 
 if __name__ == '__main__':
-    try:
-        asyncio.run(main())
-    except (KeyboardInterrupt, SystemExit):
-        logger.info("Bot stopped by user/system request")
-    except Exception as e:
-        logger.error(f"Fatal error: {e}")
-        sys.exit(1) 
+    retry_count = 0
+    max_retries = 3
+    
+    while retry_count < max_retries:
+        try:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            exit_code = loop.run_until_complete(main())
+            loop.close()
+            
+            if exit_code == 0:
+                logger.info("Bot stopped cleanly")
+                break
+                
+            retry_count += 1
+            logger.info(f"Restarting bot (attempt {retry_count}/{max_retries})...")
+            time.sleep(5)
+            
+        except Exception as e:
+            logger.error(f"Fatal error: {e}")
+            retry_count += 1
+            if retry_count >= max_retries:
+                logger.error("Max retries reached, shutting down")
+                sys.exit(1)
+            time.sleep(5)
