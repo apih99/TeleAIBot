@@ -91,17 +91,25 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Get chat history for this user
         history = chat_histories[user_id]
         
-        # Create chat instance with history
-        chat = text_model.start_chat(history=history)
+        # Create a list of messages for the chat
+        messages = []
+        for entry in history:
+            if entry["role"] == "user":
+                messages.append({"role": "user", "parts": [entry["parts"][0]]})
+            else:
+                messages.append({"role": "model", "parts": [entry["parts"][0]]})
         
-        # Generate response
+        # Start chat with history
+        chat = text_model.start_chat(history=messages)
+        
+        # Send the current message
         response = chat.send_message(user_message)
         
         # Update chat history with the new exchange
         history.append({"role": "user", "parts": [user_message]})
         history.append({"role": "model", "parts": [response.text]})
         
-        # Keep only last 10 messages to prevent context overflow
+        # Keep only last 10 exchanges to prevent context overflow
         if len(history) > 20:  # 10 exchanges (user + model)
             history = history[-20:]
         chat_histories[user_id] = history
@@ -109,6 +117,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(response.text)
     except Exception as e:
         error_message = f"Sorry, an error occurred: {str(e)}"
+        logging.error(f"Error in handle_message: {str(e)}")
         await update.message.reply_text(error_message)
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
