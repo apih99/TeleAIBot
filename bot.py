@@ -14,6 +14,8 @@ from PIL import Image
 from collections import defaultdict
 import base64
 import sys
+import socket
+import time
 
 # Load environment variables
 load_dotenv()
@@ -78,18 +80,23 @@ async def send_long_message(update: Update, text: str):
     if current_message:
         await update.message.reply_text(current_message)
 
-def signal_handler(signum, frame):
-    """Handle shutdown signals gracefully."""
-    global is_shutting_down
-    logger.info(f"Received signal {signum}. Starting graceful shutdown...")
-    is_shutting_down = True
-    
-    if health_server:
-        logger.info("Shutting down health check server...")
-        health_server.shutdown()
-    
-    # Let the main loop handle the actual shutdown
-    raise SystemExit(0)
+def is_port_in_use(port: int) -> bool:
+    """Check if a port is already in use."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        try:
+            s.bind(('0.0.0.0', port))
+            return False
+        except socket.error:
+            return True
+
+def wait_for_port_release(port: int, timeout: int = 60) -> bool:
+    """Wait for a port to be released."""
+    start_time = time.time()
+    while time.time() - start_time < timeout:
+        if not is_port_in_use(port):
+            return True
+        time.sleep(1)
+    return False
 
 class HealthCheckHandler(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -106,18 +113,60 @@ class HealthCheckHandler(BaseHTTPRequestHandler):
         """Suppress default logging of requests."""
         pass
 
+def cleanup_socket(port: int):
+    """Force cleanup the socket if it's in use."""
+    try:
+        # Create a temporary socket to force close the port
+        temp_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        temp_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        temp_socket.bind(('0.0.0.0', port))
+        temp_socket.close()
+    except Exception as e:
+        logger.error(f"Failed to cleanup socket: {e}")
+
 def run_health_server():
+    """Run the health check server with proper error handling."""
     global health_server
     try:
         port = int(os.getenv('PORT', 8080))
+        
+        # If port is in use, try to clean it up
+        if is_port_in_use(port):
+            logger.info(f"Port {port} is in use, attempting cleanup...")
+            cleanup_socket(port)
+            
+            # Wait for port to be released
+            if not wait_for_port_release(port):
+                logger.error(f"Could not secure port {port}, health check server disabled")
+                return
+        
+        # Create server with reuse address option
         health_server = HTTPServer(('0.0.0.0', port), HealthCheckHandler)
+        health_server.allow_reuse_address = True
         logger.info(f'Starting health check server on port {port}')
         health_server.serve_forever()
     except Exception as e:
         logger.error(f"Health server error: {e}")
-        if not is_shutting_down:  # Only restart if not shutting down
-            logger.info("Attempting to restart health server...")
+        if not is_shutting_down:
+            time.sleep(5)  # Wait before retry
             run_health_server()
+
+def signal_handler(signum, frame):
+    """Handle shutdown signals gracefully."""
+    global is_shutting_down, health_server
+    logger.info(f"Received signal {signum}. Starting graceful shutdown...")
+    is_shutting_down = True
+    
+    if health_server:
+        try:
+            logger.info("Shutting down health check server...")
+            health_server.shutdown()
+            health_server.server_close()
+        except Exception as e:
+            logger.error(f"Error shutting down health server: {e}")
+    
+    # Let the main loop handle the actual shutdown
+    raise SystemExit(0)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Send a message when the command /start is issued."""
