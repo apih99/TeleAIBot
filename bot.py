@@ -40,6 +40,7 @@ MAX_HISTORY = 15
 # Global variables for cleanup
 http_server = None
 application = None
+should_exit = False
 
 # Simple HTTP handler for health checks
 class HealthCheckHandler(BaseHTTPRequestHandler):
@@ -173,9 +174,9 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         error_message = f"Sorry, an error occurred while processing the image: {str(e)}"
         await update.message.reply_text(error_message)
 
-async def shutdown(signal_num):
+async def shutdown():
     """Cleanup function to be called before shutdown."""
-    logger.info(f"Received signal {signal_num}, initiating shutdown...")
+    logger.info("Initiating shutdown...")
     
     # Stop the HTTP server
     global http_server
@@ -189,7 +190,6 @@ async def shutdown(signal_num):
     if application:
         logger.info("Stopping telegram bot...")
         await application.stop()
-        await application.shutdown()
     
     # Clear memory
     chat_histories.clear()
@@ -197,16 +197,15 @@ async def shutdown(signal_num):
     
     logger.info("Shutdown complete")
 
-def signal_handler(sig, frame):
+def signal_handler():
     """Handle shutdown signals."""
-    logger.info(f"Received signal {sig}")
-    # Don't shut down automatically - only handle actual termination signals
-    if sig in (signal.SIGINT, signal.SIGTERM):
-        asyncio.run(shutdown(sig))
+    global should_exit
+    should_exit = True
+    logger.info("Shutdown signal received")
 
 async def run_bot():
     """Run the telegram bot."""
-    global application
+    global application, should_exit
     
     # Create the Application and pass it your bot's token
     application = Application.builder().token(os.getenv('TELEGRAM_BOT_TOKEN')).build()
@@ -224,22 +223,37 @@ async def run_bot():
     logger.info("Starting bot...")
     await application.initialize()
     await application.start()
-    await application.run_polling(allowed_updates=Update.ALL_TYPES)
+    
+    try:
+        logger.info("Bot is running...")
+        while not should_exit:
+            await application.update_queue.get()
+            
+    except Exception as e:
+        logger.error(f"Error in bot: {str(e)}")
+    finally:
+        await shutdown()
+
+async def main_async():
+    """Async main function."""
+    # Start health check server in a separate thread
+    health_thread = threading.Thread(target=run_health_server, daemon=True)
+    health_thread.start()
+
+    # Run the bot
+    await run_bot()
 
 def main():
     """Start the bot and health server."""
     # Set up signal handlers
-    signal.signal(signal.SIGINT, signal_handler)
-    signal.signal(signal.SIGTERM, signal_handler)
+    signal.signal(signal.SIGINT, lambda s, f: signal_handler())
+    signal.signal(signal.SIGTERM, lambda s, f: signal_handler())
     
     try:
-        # Start health check server in a separate thread
-        health_thread = threading.Thread(target=run_health_server, daemon=True)
-        health_thread.start()
-
-        # Run the bot in the main thread
-        asyncio.run(run_bot())
-        
+        # Run the async main function
+        asyncio.run(main_async())
+    except KeyboardInterrupt:
+        logger.info("Received keyboard interrupt")
     except Exception as e:
         logger.error(f"Error in main: {str(e)}")
     finally:
