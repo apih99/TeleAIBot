@@ -33,6 +33,43 @@ chat_histories = defaultdict(list)
 image_contexts = defaultdict(dict)  # Store the last image and its description
 MAX_HISTORY = 15
 
+async def send_long_message(update: Update, text: str):
+    """Split and send long messages."""
+    # Telegram's message limit is 4096 characters
+    MAX_LENGTH = 4000  # Leaving some margin for safety
+    
+    # Split by newlines first to keep formatting
+    paragraphs = text.split('\n')
+    current_message = ""
+    
+    for paragraph in paragraphs:
+        # If adding this paragraph would exceed limit, send current message
+        if len(current_message) + len(paragraph) + 1 > MAX_LENGTH:
+            if current_message:
+                await update.message.reply_text(current_message)
+                current_message = ""
+            
+            # If single paragraph is too long, split it by spaces
+            if len(paragraph) > MAX_LENGTH:
+                words = paragraph.split(' ')
+                for word in words:
+                    if len(current_message) + len(word) + 1 > MAX_LENGTH:
+                        await update.message.reply_text(current_message)
+                        current_message = word + ' '
+                    else:
+                        current_message += word + ' '
+            else:
+                current_message = paragraph
+        else:
+            if current_message:
+                current_message += '\n' + paragraph
+            else:
+                current_message = paragraph
+    
+    # Send any remaining text
+    if current_message:
+        await update.message.reply_text(current_message)
+
 # Simple HTTP handler for health checks
 class HealthCheckHandler(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -63,9 +100,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 2. Analyze images you send (just send an image with or without a question)
 3. Remember context from both text and images
 4. Use /clear to clear our conversation history
+5. Handle long responses by splitting them automatically
 
 Feel free to try either!"""
-    await update.message.reply_text(welcome_message)
+    await send_long_message(update, welcome_message)
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Send a message when the command /help is issued."""
@@ -79,15 +117,16 @@ You can:
 1. Send any text message for a response (I'll remember our conversation)
 2. Send an image (with optional text) for image analysis
 3. Ask follow-up questions about the last image you sent
+4. Get long detailed responses (they'll be split automatically)
 """
-    await update.message.reply_text(help_text)
+    await send_long_message(update, help_text)
 
 async def clear_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Clear conversation history for the user."""
     user_id = update.effective_user.id
     chat_histories[user_id] = []
     image_contexts[user_id] = {}
-    await update.message.reply_text("Conversation history cleared! Let's start fresh.")
+    await send_long_message(update, "Conversation history cleared! Let's start fresh.")
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle incoming text messages with context."""
@@ -104,7 +143,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     f"Previous context: {image_contexts[user_id].get('description', '')}\nNew question: {user_message}",
                     img
                 ])
-                await update.message.reply_text(response.text)
+                await send_long_message(update, response.text)
                 # Store the interaction in chat history
                 chat_histories[user_id].append({"role": "user", "parts": [user_message]})
                 chat_histories[user_id].append({"role": "model", "parts": [response.text]})
@@ -120,10 +159,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if len(chat_histories[user_id]) > MAX_HISTORY:
             chat_histories[user_id] = chat_histories[user_id][-MAX_HISTORY:]
         
-        await update.message.reply_text(response.text)
+        await send_long_message(update, response.text)
     except Exception as e:
         error_message = f"Sorry, an error occurred: {str(e)}"
-        await update.message.reply_text(error_message)
+        await send_long_message(update, error_message)
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle incoming photos with context."""
@@ -152,10 +191,10 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         chat_histories[user_id].append({"role": "user", "parts": [f"[Sent an image with caption: {caption}]"]})
         chat_histories[user_id].append({"role": "model", "parts": [response.text]})
         
-        await update.message.reply_text(response.text)
+        await send_long_message(update, response.text)
     except Exception as e:
         error_message = f"Sorry, an error occurred while processing the image: {str(e)}"
-        await update.message.reply_text(error_message)
+        await send_long_message(update, error_message)
 
 def main():
     """Start the bot."""
