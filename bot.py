@@ -2,7 +2,7 @@ import os
 import logging
 from dotenv import load_dotenv
 import google.generativeai as genai
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ParseMode
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
 import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
@@ -11,6 +11,7 @@ from io import BytesIO
 from PIL import Image
 from collections import defaultdict
 import base64
+import re
 
 # Load environment variables
 load_dotenv()
@@ -85,8 +86,24 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"Vision: {AVAILABLE_MODELS[user_preferences[user_id]['vision_model']]}"
         )
 
+def format_markdown_text(text: str) -> str:
+    """Convert markdown-style formatting to Telegram-compatible markdown."""
+    # Replace '**text**' with '*text*' for bold
+    text = re.sub(r'\*\*(.*?)\*\*', r'*\1*', text)
+    
+    # Replace bullet points for better readability
+    text = re.sub(r'^\* ', '• ', text, flags=re.MULTILINE)
+    
+    # Add extra newline before bullet points for better spacing
+    text = re.sub(r'\n\*', '\n\n•', text)
+    
+    return text
+
 async def send_long_message(update: Update, text: str):
-    """Split and send long messages."""
+    """Split and send long messages with proper formatting."""
+    # Format the text for Telegram markdown
+    text = format_markdown_text(text)
+    
     # Telegram's message limit is 4096 characters
     MAX_LENGTH = 4000  # Leaving some margin for safety
     
@@ -98,7 +115,11 @@ async def send_long_message(update: Update, text: str):
         # If adding this paragraph would exceed limit, send current message
         if len(current_message) + len(paragraph) + 1 > MAX_LENGTH:
             if current_message:
-                await update.message.reply_text(current_message)
+                try:
+                    await update.message.reply_text(current_message, parse_mode=ParseMode.MARKDOWN)
+                except Exception as e:
+                    # If markdown parsing fails, send without formatting
+                    await update.message.reply_text(current_message)
                 current_message = ""
             
             # If single paragraph is too long, split it by spaces
@@ -106,7 +127,10 @@ async def send_long_message(update: Update, text: str):
                 words = paragraph.split(' ')
                 for word in words:
                     if len(current_message) + len(word) + 1 > MAX_LENGTH:
-                        await update.message.reply_text(current_message)
+                        try:
+                            await update.message.reply_text(current_message, parse_mode=ParseMode.MARKDOWN)
+                        except Exception as e:
+                            await update.message.reply_text(current_message)
                         current_message = word + ' '
                     else:
                         current_message += word + ' '
@@ -120,7 +144,10 @@ async def send_long_message(update: Update, text: str):
     
     # Send any remaining text
     if current_message:
-        await update.message.reply_text(current_message)
+        try:
+            await update.message.reply_text(current_message, parse_mode=ParseMode.MARKDOWN)
+        except Exception as e:
+            await update.message.reply_text(current_message)
 
 # Simple HTTP handler for health checks
 class HealthCheckHandler(BaseHTTPRequestHandler):
