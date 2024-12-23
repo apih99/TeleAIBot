@@ -2,8 +2,8 @@ import os
 import logging
 from dotenv import load_dotenv
 import google.generativeai as genai
-from telegram import Update
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
 import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import requests
@@ -24,14 +24,66 @@ logging.basicConfig(
 # Initialize Gemini AI
 genai.configure(api_key=os.getenv('GEMINI_API_KEY'))
 
-# Initialize models
-text_model = genai.GenerativeModel('gemini-2.0-flash-exp')
-vision_model = genai.GenerativeModel('gemini-2.0-flash-exp')
+# Available models (you can replace these with actual model names later)
+AVAILABLE_MODELS = {
+    'gemini-2.0-flash-exp': 'Gemini Flash 2.0',
+    'gemini-2.0-flash-exp': 'Default Vision Model',
+    'gemini-2.0-flash-thinking-exp-1219': 'Gemini Flash Thinking'
+
+}
+
+# Store user preferences
+user_preferences = defaultdict(lambda: {'text_model': 'gemini-2.0-flash-exp', 'vision_model': 'gemini-2.0-flash-exp'})
 
 # Store chat histories and image contexts
 chat_histories = defaultdict(list)
-image_contexts = defaultdict(dict)  # Store the last image and its description
+image_contexts = defaultdict(dict)
 MAX_HISTORY = 15
+
+def get_model_for_user(user_id: int, model_type: str = 'text'):
+    """Get the appropriate model for a user based on their preferences."""
+    prefs = user_preferences[user_id]
+    model_name = prefs['text_model'] if model_type == 'text' else prefs['vision_model']
+    
+    # For now, always return the default models regardless of selection
+    # You can modify this later to use actual different models
+    return genai.GenerativeModel('gemini-2.0-flash-exp' if model_type == 'text' else 'gemini-2.0-flash-exp')
+
+async def model_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle the /model command to change AI models."""
+    keyboard = []
+    for model_id, model_name in AVAILABLE_MODELS.items():
+        keyboard.append([InlineKeyboardButton(model_name, callback_data=f"model_{model_id}")])
+    
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await update.message.reply_text(
+        "Choose your preferred model:\n"
+        "(Note: Some models are coming soon)",
+        reply_markup=reply_markup
+    )
+
+async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle model selection button presses."""
+    query = update.callback_query
+    await query.answer()
+    
+    if query.data.startswith("model_"):
+        model_id = query.data.replace("model_", "")
+        user_id = update.effective_user.id
+        
+        # Update user preferences
+        if model_id in ['gemini-2.0-flash-exp', 'gemini-2.0-flash-thinking-exp-1219']:
+            user_preferences[user_id]['text_model'] = model_id
+        if model_id in ['gemini-2.0-flash-exp']:
+            user_preferences[user_id]['vision_model'] = model_id
+        
+        model_name = AVAILABLE_MODELS.get(model_id, "Unknown Model")
+        await query.edit_message_text(
+            f"Model set to: {model_name}\n"
+            f"Current models in use:\n"
+            f"Text: {AVAILABLE_MODELS[user_preferences[user_id]['text_model']]}\n"
+            f"Vision: {AVAILABLE_MODELS[user_preferences[user_id]['vision_model']]}"
+        )
 
 async def send_long_message(update: Update, text: str):
     """Split and send long messages."""
@@ -91,18 +143,19 @@ def run_health_server():
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Send a message when the command /start is issued."""
     user_id = update.effective_user.id
-    chat_histories[user_id] = []  # Clear history for this user
-    image_contexts[user_id] = {}  # Clear image context
+    chat_histories[user_id] = []
+    image_contexts[user_id] = {}
     
     welcome_message = """👋 Hello! I'm your AI assistant powered by Gemini. I can:
     
 1. Answer your text messages (with memory of our conversation)
 2. Analyze images you send (just send an image with or without a question)
 3. Remember context from both text and images
-4. Use /clear to clear our conversation history
-5. Handle long responses by splitting them automatically
+4. Use /model to choose your preferred AI model
+5. Use /clear to clear our conversation history
+6. Handle long responses by splitting them automatically
 
-Feel free to try either!"""
+Feel free to try any of these features!"""
     await send_long_message(update, welcome_message)
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -112,6 +165,7 @@ Here are the available commands:
 /start - Start the bot
 /help - Show this help message
 /clear - Clear conversation history
+/model - Choose your preferred AI model
 
 You can:
 1. Send any text message for a response (I'll remember our conversation)
@@ -139,23 +193,23 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             # Use vision model for follow-up about the image
             img = image_contexts[user_id].get('image')
             if img:
-                response = vision_model.generate_content([
+                model = get_model_for_user(user_id, 'vision')
+                response = model.generate_content([
                     f"Previous context: {image_contexts[user_id].get('description', '')}\nNew question: {user_message}",
                     img
                 ])
                 await send_long_message(update, response.text)
-                # Store the interaction in chat history
                 chat_histories[user_id].append({"role": "user", "parts": [user_message]})
                 chat_histories[user_id].append({"role": "model", "parts": [response.text]})
                 return
 
         # If no image context or not a follow-up, proceed with text chat
+        model = get_model_for_user(user_id, 'text')
         chat_histories[user_id].append({"role": "user", "parts": [user_message]})
-        chat = text_model.start_chat(history=chat_histories[user_id])
+        chat = model.start_chat(history=chat_histories[user_id])
         response = chat.send_message(user_message)
         chat_histories[user_id].append({"role": "model", "parts": [response.text]})
         
-        # Trim history if too long
         if len(chat_histories[user_id]) > MAX_HISTORY:
             chat_histories[user_id] = chat_histories[user_id][-MAX_HISTORY:]
         
@@ -171,23 +225,19 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         photo = update.message.photo[-1]
         file = await context.bot.get_file(photo.file_id)
         
-        # Download the photo
         response = requests.get(file.file_path)
         img = Image.open(BytesIO(response.content))
         
-        # Get caption if any
         caption = update.message.caption if update.message.caption else "What's in this image?"
         
-        # Store image context for future reference
         image_contexts[user_id] = {
             'image': img,
             'description': caption
         }
         
-        # Generate response using vision model
-        response = vision_model.generate_content([caption, img])
+        model = get_model_for_user(user_id, 'vision')
+        response = model.generate_content([caption, img])
         
-        # Store the interaction in chat history
         chat_histories[user_id].append({"role": "user", "parts": [f"[Sent an image with caption: {caption}]"]})
         chat_histories[user_id].append({"role": "model", "parts": [response.text]})
         
@@ -209,6 +259,10 @@ def main():
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("clear", clear_history))
+    application.add_handler(CommandHandler("model", model_command))
+    
+    # Add callback handler for model selection buttons
+    application.add_handler(CallbackQueryHandler(button_callback))
     
     # Add message handlers
     application.add_handler(MessageHandler(filters.PHOTO, handle_photo))
