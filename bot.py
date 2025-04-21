@@ -76,7 +76,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_id = update.effective_user.id
         
         # Update user preferences
-        if model_id in ['gemini-2.5-flash-preview-04-17', 'ggemini-2.5-flash-preview-04-17']:
+        if model_id in ['gemini-2.5-flash-preview-04-17', 'gemini-2.5-flash-preview-04-17']:
             user_preferences[user_id]['text_model'] = model_id
         if model_id in ['gemini-2.5-flash-preview-04-17']:
             user_preferences[user_id]['vision_model'] = model_id
