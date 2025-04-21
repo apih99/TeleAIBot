@@ -28,16 +28,16 @@ genai.configure(api_key=os.getenv('GEMINI_API_KEY'))
 
 # Available models (you can replace these with actual model names later)
 AVAILABLE_MODELS = {
-    'gemini-2.0-flash-exp': 'Gemini Flash 2.0',
-    'gemini-2.0-flash-exp': 'Default Vision Model',
-    'gemini-2.0-flash-thinking-exp-1219': 'Gemini Flash Thinking',
-    'gemini-2.0-flash-thinking-exp-01-21': 'Gemini Flash Thinking 01/21'
+    'gemini-2.5-pro-preview-03-25': 'Gemini Pro 2.5',
+    'gemini-2.5-pro-preview-03-25': 'Default Vision Model',
+    'gemini-2.5-flash-preview-04-17': 'Gemini Flash Thinking',
+    'gemini-2.5-flash-preview-04-17': 'Gemini Flash Thinking 01/21'
 
 
 }
 
 # Store user preferences
-user_preferences = defaultdict(lambda: {'text_model': 'gemini-2.0-flash-thinking-exp-01-21', 'vision_model': 'gemini-2.0-flash-thinking-exp-01-21'})
+user_preferences = defaultdict(lambda: {'text_model': 'gemini-2.5-pro-preview-03-25', 'vision_model': 'gemini-2.5-pro-preview-03-25'})
 
 # Store chat histories and image contexts
 chat_histories = defaultdict(list)
@@ -51,7 +51,7 @@ def get_model_for_user(user_id: int, model_type: str = 'text'):
     
     # For now, always return the default models regardless of selection
     # You can modify this later to use actual different models
-    return genai.GenerativeModel('gemini-2.0-flash-exp' if model_type == 'text' else 'gemini-2.0-flash-exp')
+    return genai.GenerativeModel('Gemini Pro 2.5' if model_type == 'text' else 'gemini-2.5-pro-preview-03-25')
 
 async def model_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle the /model command to change AI models."""
@@ -76,9 +76,9 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_id = update.effective_user.id
         
         # Update user preferences
-        if model_id in ['gemini-2.0-flash-exp', 'gemini-2.0-flash-thinking-exp-1219']:
+        if model_id in ['gemini-2.5-flash-preview-04-17', 'ggemini-2.5-flash-preview-04-17']:
             user_preferences[user_id]['text_model'] = model_id
-        if model_id in ['gemini-2.0-flash-exp']:
+        if model_id in ['gemini-2.5-flash-preview-04-17']:
             user_preferences[user_id]['vision_model'] = model_id
         
         model_name = AVAILABLE_MODELS.get(model_id, "Unknown Model")
