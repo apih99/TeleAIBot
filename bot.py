@@ -26,18 +26,20 @@ logging.basicConfig(
 # Initialize Gemini AI
 genai.configure(api_key=os.getenv('GEMINI_API_KEY'))
 
-# Available models (you can replace these with actual model names later)
+# Available models (Actual Model ID: User-facing Name)
+# Ensure these model IDs are valid and available via the Gemini API
 AVAILABLE_MODELS = {
-    'gemini-2.0-flash-exp': 'Gemini Flash 2.0',
-    'gemini-2.0-flash-exp': 'Default Vision Model',
-    'gemini-2.5-flash-preview-04-17': 'Gemini Flash Thinking',
-    'gemini-2.5-flash-preview-04-17': 'Gemini Flash Thinking 01/21'
-
-
+    'gemini-2.5-flash-preview-04-17': 'Gemini 1.5 Flash',
+    'gemini-2.5-flash-preview-04-17': 'Gemini Pro (Text/Vision)',
+    # Add other models like 'gemini-ultra' if needed and available
 }
 
-# Store user preferences
-user_preferences = defaultdict(lambda: {'text_model': 'gemini-2.5-flash-preview-04-17', 'vision_model': 'gemini-2.5-flash-preview-04-17'})
+# Define default models using the actual IDs
+DEFAULT_TEXT_MODEL = 'gemini-2.5-flash-preview-04-17'
+DEFAULT_VISION_MODEL = 'gemini-2.5-flash-preview-04-17' # Gemini Pro generally handles vision well
+
+# Store user preferences using the actual model IDs
+user_preferences = defaultdict(lambda: {'text_model': DEFAULT_TEXT_MODEL, 'vision_model': DEFAULT_VISION_MODEL})
 
 # Store chat histories and image contexts
 chat_histories = defaultdict(list)
@@ -47,11 +49,17 @@ MAX_HISTORY = 15
 def get_model_for_user(user_id: int, model_type: str = 'text'):
     """Get the appropriate model for a user based on their preferences."""
     prefs = user_preferences[user_id]
-    model_name = prefs['text_model'] if model_type == 'text' else prefs['vision_model']
+    model_id = prefs['text_model'] if model_type == 'text' else prefs['vision_model']
     
-    # For now, always return the default models regardless of selection
-    # You can modify this later to use actual different models
-    return genai.GenerativeModel('gemini-2.0-flash-exp' if model_type == 'text' else 'gemini-2.0-flash-exp')
+    # Return the generative model instance based on the selected ID
+    try:
+        return genai.GenerativeModel(model_id)
+    except Exception as e:
+        logging.error(f"Failed to initialize model {model_id} for user {user_id}: {e}")
+        # Fallback to default models if the selected one fails
+        fallback_model_id = DEFAULT_TEXT_MODEL if model_type == 'text' else DEFAULT_VISION_MODEL
+        logging.info(f"Falling back to model: {fallback_model_id}")
+        return genai.GenerativeModel(fallback_model_id)
 
 async def model_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle the /model command to change AI models."""
@@ -75,19 +83,21 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         model_id = query.data.replace("model_", "")
         user_id = update.effective_user.id
         
-        # Update user preferences
-        if model_id in ['gemini-2.0-flash-exp', 'gemini-2.0-flash-thinking-exp-1219']:
+        if model_id in AVAILABLE_MODELS:
+            # Update both text and vision model preferences for simplicity
+            # Assumes selected models are generally capable of both, adjust if needed
             user_preferences[user_id]['text_model'] = model_id
-        if model_id in ['gemini-2.0-flash-exp']:
             user_preferences[user_id]['vision_model'] = model_id
-        
-        model_name = AVAILABLE_MODELS.get(model_id, "Unknown Model")
-        await query.edit_message_text(
-            f"Model set to: {model_name}\n"
-            f"Current models in use:\n"
-            f"Text: {AVAILABLE_MODELS[user_preferences[user_id]['text_model']]}\n"
-            f"Vision: {AVAILABLE_MODELS[user_preferences[user_id]['vision_model']]}"
-        )
+            
+            model_name = AVAILABLE_MODELS[model_id]
+            await query.edit_message_text(
+                f"Model set to: {model_name}\n"
+                f"Current models in use:\n"
+                f"Text: {AVAILABLE_MODELS[user_preferences[user_id]['text_model']]}\n"
+                f"Vision: {AVAILABLE_MODELS[user_preferences[user_id]['vision_model']]}"
+            )
+        else:
+            await query.edit_message_text("Invalid model selected.")
 
 def format_markdown_text(text: str) -> str:
     """Convert markdown-style formatting to Telegram-compatible markdown."""
@@ -302,4 +312,4 @@ def main():
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == '__main__':
-    main() 
+    main()
