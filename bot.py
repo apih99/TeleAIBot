@@ -30,14 +30,14 @@ genai.configure(api_key=os.getenv('GEMINI_API_KEY'))
 AVAILABLE_MODELS = {
     'gemini-2.0-flash-exp': 'Gemini Flash 2.0',
     'gemini-2.0-flash-exp': 'Default Vision Model',
-    'gemini-2.0-flash-thinking-exp-1219': 'Gemini Flash Thinking',
-    'gemini-2.0-flash-thinking-exp-01-21': 'Gemini Flash Thinking 01/21'
+    'gemini-2.5-flash-preview-04-17': 'Gemini Flash Thinking',
+    'gemini-2.5-flash-preview-04-17': 'Gemini Flash Thinking 01/21'
 
 
 }
 
 # Store user preferences
-user_preferences = defaultdict(lambda: {'text_model': 'gemini-2.0-flash-thinking-exp-01-21', 'vision_model': 'gemini-2.0-flash-thinking-exp-01-21'})
+user_preferences = defaultdict(lambda: {'text_model': 'gemini-2.5-flash-preview-04-17', 'vision_model': 'gemini-2.5-flash-preview-04-17'})
 
 # Store chat histories and image contexts
 chat_histories = defaultdict(list)
