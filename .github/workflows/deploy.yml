@@ -1,6 +1,5 @@
-name: Deploy to VPS
+name: Deploy to VPS via Tailscale
 
-# This workflow runs on any push to the 'main' branch
 on:
   push:
     branches:
@@ -10,13 +9,21 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
+      # Step 1: Install Tailscale and connect the runner to your tailnet
+      - name: Connect to Tailscale
+        uses: tailscale/github-action@v2
+        with:
+          authkey: ${{ secrets.TS_AUTHKEY }}
+
+      # Step 2: Run the SSH deployment (this now happens over the secure Tailscale network)
       - name: Deploy to VPS
         uses: appleboy/ssh-action@master
         with:
-          host: ${{ secrets.VPS_HOST }}
+          host: ${{ secrets.VPS_HOST }}       # Should be your VM's 100.x.x.x IP
           username: ${{ secrets.VPS_USERNAME }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
+          # No port is needed unless you changed the SSH port on your VM
           script: |
-            # Use the deploy script we created earlier
+            # The same deploy script as before
             cd ~/TeleAIBot
             ./deploy.sh
