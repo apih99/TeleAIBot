@@ -29,14 +29,14 @@ genai.configure(api_key=os.getenv('GEMINI_API_KEY'))
 # Available models (Actual Model ID: User-facing Name)
 # Ensure these model IDs are valid and available via the Gemini API
 AVAILABLE_MODELS = {
-    'gemini-2.5-flash-preview-05-20': 'Gemini 1.5 Flash',
-    'gemini-2.5-flash-preview-05-20': 'Gemini Pro (Text/Vision)',
+    'gemini-3-flash-preview': 'Gemini 3 Flash',
+    'gemini-3-flash-preview': 'Gemini 3 Flash',
     # Add other models like 'gemini-ultra' if needed and available
 }
 
 # Define default models using the actual IDs
-DEFAULT_TEXT_MODEL = 'gemini-2.5-flash-preview-05-20'
-DEFAULT_VISION_MODEL = 'gemini-2.5-flash-preview-05-20' # Gemini Pro generally handles vision well
+DEFAULT_TEXT_MODEL = 'gemini-3-flash-preview'
+DEFAULT_VISION_MODEL = 'gemini-3-flash-preview' # Gemini Pro generally handles vision well
 
 # Store user preferences using the actual model IDs
 user_preferences = defaultdict(lambda: {'text_model': DEFAULT_TEXT_MODEL, 'vision_model': DEFAULT_VISION_MODEL})
